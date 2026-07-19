@@ -1,0 +1,21 @@
+services:
+  - type: worker
+    name: discord-trade-bot
+    runtime: node
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: TRADE_LOG_CHANNEL_ID
+        sync: false
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
