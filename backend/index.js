@@ -1,3 +1,4 @@
+const http = require('node:http')
 const path = require('node:path')
 require('dotenv').config({
   path: path.join(__dirname, '..', '.env'),
@@ -273,6 +274,60 @@ bot.on(Events.Error, (error) => {
   console.error('Discord 클라이언트 오류:', error)
 })
 
+// Render Web Service는 포트 바인딩을 요구한다. PORT가 있으면 헬스체크용 최소
+// HTTP 서버를 연다. Background Worker(포트 없음)에서는 열지 않고 넘어간다.
+let healthServer = null
+let selfPingTimer = null
+
+function startSelfPing() {
+  const baseUrl = process.env.SELF_PING_URL || process.env.RENDER_EXTERNAL_URL
+  if (!baseUrl) {
+    console.info(
+      '자체 핑 비활성화: SELF_PING_URL 또는 RENDER_EXTERNAL_URL이 없습니다.',
+    )
+    return
+  }
+
+  let healthUrl
+  try {
+    healthUrl = new URL('/health', baseUrl).toString()
+  } catch {
+    console.error('자체 핑 URL이 올바르지 않습니다.')
+    return
+  }
+
+  selfPingTimer = setInterval(async () => {
+    try {
+      const response = await fetch(healthUrl, {
+        signal: AbortSignal.timeout(10000),
+      })
+      if (!response.ok && response.status !== 503) {
+        console.warn(`자체 핑 응답 오류: HTTP ${response.status}`)
+      }
+    } catch (error) {
+      console.warn(`자체 핑 실패: ${error.message}`)
+    }
+  }, 30000)
+
+  console.log(`자체 핑 활성화: 30초 간격 (${healthUrl})`)
+}
+
+if (process.env.PORT) {
+  healthServer = http.createServer((request, response) => {
+    if (request.url === '/health') {
+      response.writeHead(bot.isReady() ? 200 : 503).end(
+        bot.isReady() ? 'ok' : 'starting',
+      )
+      return
+    }
+    response.writeHead(200).end('discord trade bot running')
+  })
+  healthServer.listen(Number(process.env.PORT), '0.0.0.0', () => {
+    console.log(`헬스체크 서버 실행 중: 포트 ${process.env.PORT}`)
+    startSelfPing()
+  })
+}
+
 let shuttingDown = false
 
 async function shutdown(signal) {
@@ -281,6 +336,8 @@ async function shutdown(signal) {
   console.log(`${signal} 수신, 봇을 종료합니다.`)
   bot.destroy()
   alertWebhook.destroy()
+  if (selfPingTimer) clearInterval(selfPingTimer)
+  if (healthServer) healthServer.close()
   process.exit(0)
 }
 
