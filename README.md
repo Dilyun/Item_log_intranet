@@ -31,7 +31,7 @@ SET faction_emoji = '🐍', public_account_rate = 50
 WHERE id = (SELECT id FROM faction_settings ORDER BY id LIMIT 1);
 
 INSERT INTO users (discord_id, user_code, nickname, role)
-VALUES ('123456789012345678', 7259, '세희', 1);
+VALUES ('123456789012345678', 123, '딜연', 1);
 ```
 
 서버에서 실행되는 봇에는 `SUPABASE_SERVICE_ROLE_KEY` 사용을 권장합니다. ANON
