@@ -13,6 +13,7 @@ import UserManagement from './components/UserManagement'
 import {
   cleanOAuthUrl,
   getErrorMessage,
+  recoverSessionFromUrl,
   resolveAppUserFromAuth,
   signOut,
   supabase,
@@ -42,19 +43,15 @@ function App() {
     async function bootstrap() {
       setBooting(true)
       try {
-        // implicit 플로우: URL 해시의 토큰을 detectSessionInUrl이 처리한 뒤 세션을 읽는다.
-        const { data, error } = await supabase.auth.getSession()
-        if (error) throw error
+        const session = await recoverSessionFromUrl()
         if (!active) return
 
-        cleanOAuthUrl()
-
-        if (!data.session) {
+        if (!session) {
           setUser(null)
           return
         }
 
-        const appUser = await resolveAppUserFromAuth(data.session.user)
+        const appUser = await resolveAppUserFromAuth(session.user)
         if (active) {
           setUser(appUser)
           setAuthError('')

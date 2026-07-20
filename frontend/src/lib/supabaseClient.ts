@@ -1,8 +1,14 @@
-import { createClient, type User } from '@supabase/supabase-js'
+import { createBrowserClient } from '@supabase/ssr'
+import type { User } from '@supabase/supabase-js'
 import type { AppUser, UserRole } from '../types'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+function cleanEnv(value: string | undefined) {
+  if (!value) return ''
+  return value.trim().replace(/^["']|["']$/g, '')
+}
+
+const supabaseUrl = cleanEnv(import.meta.env.VITE_SUPABASE_URL)
+const supabaseAnonKey = cleanEnv(import.meta.env.VITE_SUPABASE_ANON_KEY)
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(
@@ -10,14 +16,36 @@ if (!supabaseUrl || !supabaseAnonKey) {
   )
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+/**
+ * 이전 implicit 로그인 잔여 해시(#access_token=...)가 있으면
+ * supabase-js 초기화 중 fetch Invalid value 오류가 날 수 있어 먼저 제거한다.
+ */
+function clearLegacyAuthHash() {
+  if (typeof window === 'undefined') return
+  const { hash } = window.location
+  if (!hash) return
+  if (
+    hash.includes('access_token') ||
+    hash.includes('error') ||
+    hash.includes('refresh_token')
+  ) {
+    window.history.replaceState(
+      {},
+      '',
+      window.location.pathname + window.location.search,
+    )
+  }
+}
+
+clearLegacyAuthHash()
+
+export const supabase = createBrowserClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: true,
-    // Vite SPA는 PKCE code_verifier가 리다이렉트 중 유실되는 경우가 있어
-    // 브라우저 전용 implicit 플로우가 더 안정적이다.
-    flowType: 'implicit',
+    // URL 세션은 recoverSessionFromUrl()에서 수동 처리한다.
+    detectSessionInUrl: false,
+    flowType: 'pkce',
   },
 })
 
@@ -25,7 +53,10 @@ export function getErrorMessage(error: unknown) {
   if (error && typeof error === 'object' && 'message' in error) {
     const message = String((error as { message: string }).message)
     if (message.toLowerCase().includes('pkce code verifier')) {
-      return '로그인 세션이 끊겼습니다. 같은 브라우저에서 Discord 로그인을 다시 시도해 주세요.'
+      return '로그인 세션이 끊겼습니다. 같은 브라우저 탭에서 Discord 로그인을 다시 시도해 주세요.'
+    }
+    if (message.toLowerCase().includes('invalid value')) {
+      return '로그인 처리 중 오류가 발생했습니다. 주소창을 닫고 다시 로그인해 주세요.'
     }
     return message
   }
@@ -131,8 +162,8 @@ export async function signOut() {
   if (error) throw error
 }
 
-/** OAuth 콜백 쿼리/해시를 정리한다. */
 export function cleanOAuthUrl() {
+  if (typeof window === 'undefined') return
   const url = new URL(window.location.href)
   let changed = false
 
@@ -143,7 +174,7 @@ export function cleanOAuthUrl() {
     }
   }
 
-  if (url.hash.includes('access_token') || url.hash.includes('error')) {
+  if (url.hash) {
     url.hash = ''
     changed = true
   }
@@ -151,4 +182,25 @@ export function cleanOAuthUrl() {
   if (changed) {
     window.history.replaceState({}, '', url.pathname + url.search)
   }
+}
+
+export async function recoverSessionFromUrl() {
+  const url = new URL(window.location.href)
+  const code = url.searchParams.get('code')
+  const oauthError = url.searchParams.get('error_description')
+
+  if (oauthError) {
+    cleanOAuthUrl()
+    throw new Error(oauthError)
+  }
+
+  if (code) {
+    const { error } = await supabase.auth.exchangeCodeForSession(code)
+    cleanOAuthUrl()
+    if (error) throw error
+  }
+
+  const { data, error } = await supabase.auth.getSession()
+  if (error) throw error
+  return data.session
 }
