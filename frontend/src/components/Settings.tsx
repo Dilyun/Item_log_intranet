@@ -221,7 +221,7 @@ function Settings({ isAdmin }: SettingsProps) {
         <p className="text-xs font-semibold tracking-[0.2em] text-violet-300">
           CONFIG
         </p>
-        <h2 className="mt-1 text-2xl font-bold text-zinc-50">아이템 / 진영 설정</h2>
+        <h2 className="mt-1 text-2xl font-bold text-zinc-50">아이템 / 팩션 설정</h2>
         <p className="mt-1 text-sm text-zinc-400">
           아이템 이름·단가 수정, 새 아이템 추가, 팩션 설정을 관리합니다.
         </p>

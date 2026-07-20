@@ -312,6 +312,208 @@ async function sendTradeAlert(parsed, savedTrade) {
   })
 }
 
+const BLACK_MONEY_NAME = '💸 검은 돈'
+const BLACK_MONEY_UNIT = 12_000_000n
+
+function parsePositiveInt(value, fieldName) {
+  const number = Number.parseInt(String(value ?? ''), 10)
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw new HttpError(400, `${fieldName}이(가) 올바르지 않습니다.`)
+  }
+  return number
+}
+
+function parseTrimmedString(value, fieldName, maxLength = 255) {
+  const text = String(value ?? '').trim()
+  if (!text) throw new HttpError(400, `${fieldName}이(가) 필요합니다.`)
+  if (text.length > maxLength) {
+    throw new HttpError(400, `${fieldName}이(가) 너무 깁니다.`)
+  }
+  return text
+}
+
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message)
+    this.status = status
+  }
+}
+
+function getCorsOrigin(requestOrigin) {
+  const configured = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+
+  if (configured.length === 0) return requestOrigin || '*'
+  if (requestOrigin && configured.includes(requestOrigin)) return requestOrigin
+  return configured[0]
+}
+
+function applyCors(request, response) {
+  const origin = getCorsOrigin(request.headers.origin)
+  response.setHeader('Access-Control-Allow-Origin', origin)
+  response.setHeader('Vary', 'Origin')
+  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  response.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization',
+  )
+}
+
+function sendJson(response, status, body) {
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
+  response.end(JSON.stringify(body))
+}
+
+function readJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    request.on('data', (chunk) => {
+      size += chunk.length
+      if (size > 1_000_000) {
+        reject(new HttpError(413, '요청 본문이 너무 큽니다.'))
+        request.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    request.on('end', () => {
+      if (chunks.length === 0) {
+        resolve({})
+        return
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      } catch {
+        reject(new HttpError(400, 'JSON 본문을 파싱할 수 없습니다.'))
+      }
+    })
+    request.on('error', reject)
+  })
+}
+
+async function requireAuthUser(request) {
+  const header = request.headers.authorization || ''
+  const match = header.match(/^Bearer\s+(.+)$/i)
+  if (!match) {
+    throw new HttpError(401, '로그인이 필요합니다.')
+  }
+
+  const { data, error } = await supabase.auth.getUser(match[1])
+  if (error || !data?.user) {
+    throw new HttpError(401, '인증이 만료되었습니다. 다시 로그인해 주세요.')
+  }
+  return data.user
+}
+
+async function saveBlackMoneyExchange(payload) {
+  const sellerCode = parsePositiveInt(payload.seller_code, '판매자 고유번호')
+  const sellerName = parseTrimmedString(payload.seller_name, '판매자 이름')
+  const buyerCode = parsePositiveInt(payload.buyer_code, '구매자 고유번호')
+  const buyerName = parseTrimmedString(payload.buyer_name, '구매자 이름')
+  const quantity = parsePositiveInt(payload.quantity, '환전 갯수')
+  if (quantity > 2147483647) {
+    throw new HttpError(400, '환전 갯수가 너무 큽니다.')
+  }
+
+  const { data: seller, error: sellerError } = await supabase
+    .from('users')
+    .select('user_code, nickname, role')
+    .eq('user_code', sellerCode)
+    .maybeSingle()
+  throwIfSupabaseError(sellerError, '판매자 조회')
+  if (!seller || Number(seller.role) === 0) {
+    throw new HttpError(400, '등록되지 않았거나 정지된 판매자입니다.')
+  }
+
+  const { data: item, error: itemError } = await supabase
+    .from('items')
+    .select('item_name, price_per_unit')
+    .eq('item_name', BLACK_MONEY_NAME)
+    .maybeSingle()
+  throwIfSupabaseError(itemError, '아이템 조회')
+  if (!item) {
+    throw new HttpError(400, '검은 돈 아이템이 등록되어 있지 않습니다.')
+  }
+
+  const settlementTotal = calculateTotalPrice(
+    BLACK_MONEY_NAME,
+    item.price_per_unit,
+    quantity,
+  )
+  const exchangeTotal = BLACK_MONEY_UNIT * BigInt(quantity)
+
+  const { data: savedLog, error: insertError } = await supabase
+    .from('trade_logs')
+    .insert({
+      seller_code: sellerCode,
+      seller_name: sellerName,
+      buyer_code: buyerCode,
+      buyer_name: buyerName,
+      item_name: BLACK_MONEY_NAME,
+      quantity,
+      total_price: settlementTotal.toString(),
+    })
+    .select('id, created_at')
+    .single()
+  throwIfSupabaseError(insertError, '검은 돈 환전 로그 저장')
+
+  return {
+    logId: savedLog.id,
+    createdAt: savedLog.created_at,
+    settlementTotal,
+    exchangeTotal,
+    sellerCode,
+    sellerName,
+    buyerCode,
+    buyerName,
+    quantity,
+  }
+}
+
+async function sendBlackMoneyAlert(saved) {
+  const embed = new EmbedBuilder()
+    .setColor(0xf59e0b)
+    .setDescription(
+      [
+        '환전자',
+        `${saved.sellerName}(${saved.sellerCode})`,
+        '환전 요청자',
+        `${saved.buyerName}(${saved.buyerCode})`,
+        `환전 갯수 ${saved.quantity.toLocaleString('ko-KR')}개 | 환전 총 금액 : ${formatWon(saved.exchangeTotal)}`,
+      ].join('\n'),
+    )
+    .setTimestamp(new Date(saved.createdAt))
+
+  await alertWebhook.send({
+    username: '검은 돈 환전',
+    embeds: [embed],
+    allowedMentions: { parse: [] },
+  })
+}
+
+async function handleBlackMoneyLogRequest(request, response) {
+  await requireAuthUser(request)
+  const body = await readJsonBody(request)
+  const saved = await saveBlackMoneyExchange(body)
+
+  try {
+    await sendBlackMoneyAlert(saved)
+  } catch (error) {
+    console.error(`검은 돈 알림 발송 실패 (로그 #${saved.logId}):`, error)
+  }
+
+  sendJson(response, 201, {
+    ok: true,
+    id: saved.logId,
+    created_at: saved.createdAt,
+    total_price: saved.settlementTotal.toString(),
+    exchange_total: saved.exchangeTotal.toString(),
+  })
+}
+
 bot.once(Events.ClientReady, (client) => {
   console.log(`Discord 봇 로그인 완료: ${client.user.tag}`)
 })
@@ -390,14 +592,47 @@ function startSelfPing() {
 }
 
 if (process.env.PORT) {
-  healthServer = http.createServer((request, response) => {
-    if (request.url === '/health') {
+  healthServer = http.createServer(async (request, response) => {
+    applyCors(request, response)
+
+    const url = new URL(request.url || '/', 'http://localhost')
+    const { pathname } = url
+
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204).end()
+      return
+    }
+
+    if (request.method === 'GET' && pathname === '/health') {
       response.writeHead(bot.isReady() ? 200 : 503).end(
         bot.isReady() ? 'ok' : 'starting',
       )
       return
     }
-    response.writeHead(200).end('discord trade bot running')
+
+    if (request.method === 'POST' && pathname === '/api/black-money-logs') {
+      try {
+        await handleBlackMoneyLogRequest(request, response)
+      } catch (error) {
+        const status = error instanceof HttpError ? error.status : 500
+        const message =
+          error instanceof HttpError
+            ? error.message
+            : error?.message || '서버 오류가 발생했습니다.'
+        if (status >= 500) {
+          console.error('검은 돈 로그 API 오류:', error)
+        }
+        sendJson(response, status, { ok: false, error: message })
+      }
+      return
+    }
+
+    if (request.method === 'GET' && pathname === '/') {
+      response.writeHead(200).end('discord trade bot running')
+      return
+    }
+
+    sendJson(response, 404, { ok: false, error: 'Not found' })
   })
   healthServer.listen(Number(process.env.PORT), '0.0.0.0', () => {
     console.log(`헬스체크 서버 실행 중: 포트 ${process.env.PORT}`)
@@ -435,4 +670,5 @@ module.exports = {
   calculateTotalPrice,
   parsePerson,
   parseTradeMessage,
+  saveBlackMoneyExchange,
 }

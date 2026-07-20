@@ -1,7 +1,8 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { AuthProvider } from './auth/AuthContext'
+import { AuthProvider, useAuth } from './auth/AuthContext'
 import AppLayout from './components/AppLayout'
 import AuthCallback from './components/AuthCallback'
+import Calculator from './components/Calculator'
 import Dashboard from './components/Dashboard'
 import Login from './components/Login'
 import {
@@ -10,7 +11,6 @@ import {
 } from './components/ProtectedRoute'
 import Settings from './components/Settings'
 import UserManagement from './components/UserManagement'
-import { useAuth } from './auth/AuthContext'
 
 function LoginPage() {
   const { user, booting, authError } = useAuth()
@@ -37,6 +37,7 @@ function AppRoutes() {
       <Route element={<ProtectedRoute />}>
         <Route element={<AppLayout />}>
           <Route path="/logs" element={<Dashboard />} />
+          <Route path="/calculator" element={<Calculator />} />
           <Route element={<AdminRoute />}>
             <Route
               path="/users"
