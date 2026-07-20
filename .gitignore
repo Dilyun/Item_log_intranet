@@ -1,7 +1,10 @@
 .env
 .env.local
 .env.*.local
+client.env
+server.env
 node_modules/
 dist/
 *.log
 .DS_Store
+*.tsbuildinfo
