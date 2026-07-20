@@ -59,6 +59,20 @@ const bot = new Client({
   partials: [Partials.Channel, Partials.Message],
 })
 
+function normalizeEmoji(value) {
+  if (!value) return ''
+  // 눈에 안 보이는 변형 선택자/공백을 제거해 DB 값과 비교한다.
+  return value.normalize('NFC').replace(/\uFE0F/g, '').replace(/\s+/g, '').trim()
+}
+
+function emojiDebug(value) {
+  if (!value) return '(empty)'
+  const codes = [...value]
+    .map((char) => `U+${char.codePointAt(0).toString(16).toUpperCase()}`)
+    .join(' ')
+  return `${value} [${codes}]`
+}
+
 function collectMessageText(message) {
   const parts = [message.content]
 
@@ -85,41 +99,94 @@ function extractLabeledValue(text, label) {
   return match?.[1]?.trim() ?? null
 }
 
+function extractEmbedFields(message) {
+  for (const embed of message.embeds) {
+    const title = embed.title ?? ''
+    const description = embed.description ?? ''
+    if (
+      !title.includes('아이템 전달 보고서') &&
+      !description.includes('아이템 전달 보고서')
+    ) {
+      continue
+    }
+
+    const fields = {}
+    for (const field of embed.fields) {
+      fields[field.name.trim()] = field.value.trim()
+    }
+    return fields
+  }
+  return null
+}
+
 function parsePerson(value) {
   if (!value) return null
+  const trimmed = value.trim()
 
-  const match = value.match(
-    /^(\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier}|\u200D\p{Extended_Pictographic})*)\s*(.+?)\s*\((\d+)번\)$/u,
+  // 유니코드 이모지 또는 디스코드 커스텀 이모지(<:name:id>)가 앞에 있는 경우
+  const withEmoji = trimmed.match(
+    /^(?:(<a?:\w+:\d+>)|(\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier}|\u200D\p{Extended_Pictographic})*))\s*(.+?)\s*\((\d+)번\)$/u,
   )
-  if (!match) return null
+  if (withEmoji) {
+    const userCode = Number.parseInt(withEmoji[4], 10)
+    if (!Number.isSafeInteger(userCode) || userCode <= 0) return null
+    return {
+      factionEmoji: withEmoji[1] || withEmoji[2],
+      nickname: withEmoji[3].trim(),
+      userCode,
+    }
+  }
 
-  const userCode = Number.parseInt(match[3], 10)
+  // 받는 사람처럼 맨 앞 이모지가 없는 경우: 딜연(548번)
+  const withoutEmoji = trimmed.match(/^(.+?)\s*\((\d+)번\)$/u)
+  if (!withoutEmoji) return null
+
+  const userCode = Number.parseInt(withoutEmoji[2], 10)
   if (!Number.isSafeInteger(userCode) || userCode <= 0) return null
 
   return {
-    factionEmoji: match[1],
-    nickname: match[2].trim(),
+    factionEmoji: null,
+    nickname: withoutEmoji[1].trim(),
     userCode,
   }
 }
 
-function parseTradeMessage(message) {
-  const text = collectMessageText(message)
-  if (!text.includes('아이템 전달 보고서')) return null
+function parseQuantity(value) {
+  const match = value?.match(/^([\d,]+)\s*EA$/i)
+  if (!match) return NaN
+  return Number.parseInt(match[1].replaceAll(',', ''), 10)
+}
 
-  const seller = parsePerson(extractLabeledValue(text, '보내는 사람'))
-  const buyer = parsePerson(extractLabeledValue(text, '받는 사람'))
-  const itemName = extractLabeledValue(text, '보낸 아이템')
-  const quantityText = extractLabeledValue(text, '보낸 갯수')
-  const quantityMatch = quantityText?.match(/^([\d,]+)\s*EA$/i)
-  const quantity = quantityMatch
-    ? Number.parseInt(quantityMatch[1].replaceAll(',', ''), 10)
-    : NaN
+function parseTradeMessage(message) {
+  const embedFields = extractEmbedFields(message)
+  let sellerValue
+  let buyerValue
+  let itemName
+  let quantityText
+
+  if (embedFields) {
+    sellerValue = embedFields['보내는 사람']
+    buyerValue = embedFields['받는 사람']
+    itemName = embedFields['보낸 아이템']
+    quantityText = embedFields['보낸 갯수']
+  } else {
+    const text = collectMessageText(message)
+    if (!text.includes('아이템 전달 보고서')) return null
+    sellerValue = extractLabeledValue(text, '보내는 사람')
+    buyerValue = extractLabeledValue(text, '받는 사람')
+    itemName = extractLabeledValue(text, '보낸 아이템')
+    quantityText = extractLabeledValue(text, '보낸 갯수')
+  }
+
+  const seller = parsePerson(sellerValue)
+  const buyer = parsePerson(buyerValue)
+  const quantity = parseQuantity(quantityText)
 
   if (
     !seller ||
     !buyer ||
     !itemName ||
+    !seller.factionEmoji ||
     !Number.isSafeInteger(quantity) ||
     quantity <= 0 ||
     quantity > 2147483647
@@ -159,14 +226,24 @@ function throwIfSupabaseError(error, operation) {
 }
 
 async function validateAndSaveTrade(parsed) {
-  const { data: faction, error: factionError } = await supabase
+  const { data: factions, error: factionError } = await supabase
     .from('faction_settings')
-    .select('id')
-    .eq('faction_emoji', parsed.seller.factionEmoji)
-    .limit(1)
-    .maybeSingle()
+    .select('id, faction_emoji')
   throwIfSupabaseError(factionError, '팩션 조회')
-  if (!faction) return { saved: false, reason: 'FACTION_MISMATCH' }
+
+  const sellerEmoji = normalizeEmoji(parsed.seller.factionEmoji)
+  const faction = (factions ?? []).find(
+    (row) => normalizeEmoji(row.faction_emoji) === sellerEmoji,
+  )
+  if (!faction) {
+    const dbEmojis = (factions ?? [])
+      .map((row) => emojiDebug(row.faction_emoji))
+      .join(' | ')
+    console.info(
+      `팩션 불일치: 추출=${emojiDebug(parsed.seller.factionEmoji)} / DB=${dbEmojis || '(없음)'}`,
+    )
+    return { saved: false, reason: 'FACTION_MISMATCH' }
+  }
 
   const { data: seller, error: sellerError } = await supabase
     .from('users')
