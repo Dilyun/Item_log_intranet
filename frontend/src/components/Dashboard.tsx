@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Activity, Radio, RefreshCw } from 'lucide-react'
+import { Radio, RefreshCw } from 'lucide-react'
 import {
   formatDateTime,
   formatNumber,
@@ -9,22 +9,97 @@ import {
 } from '../lib/supabaseClient'
 import type { TradeLog } from '../types'
 
+type PeriodFilter = 'today' | 'week' | 'month'
+
+const PERIOD_OPTIONS: { value: PeriodFilter; label: string }[] = [
+  { value: 'today', label: '당일' },
+  { value: 'week', label: '일주일' },
+  { value: 'month', label: '한달' },
+]
+
+function startOfLocalDay(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
+}
+
+function getPeriodStart(period: PeriodFilter) {
+  const start = startOfLocalDay()
+  if (period === 'week') {
+    start.setDate(start.getDate() - 6)
+  } else if (period === 'month') {
+    start.setDate(start.getDate() - 29)
+  }
+  return start.toISOString()
+}
+
+function matchesSearch(log: TradeLog, seller: string, buyer: string, item: string) {
+  const sellerQuery = seller.trim().toLowerCase()
+  const buyerQuery = buyer.trim().toLowerCase()
+  const itemQuery = item.trim().toLowerCase()
+
+  if (sellerQuery) {
+    const sellerText = `${log.seller_name} ${log.seller_code}`.toLowerCase()
+    if (!sellerText.includes(sellerQuery)) return false
+  }
+  if (buyerQuery) {
+    const buyerText = `${log.buyer_name} ${log.buyer_code}`.toLowerCase()
+    if (!buyerText.includes(buyerQuery)) return false
+  }
+  if (itemQuery) {
+    if (!log.item_name.toLowerCase().includes(itemQuery)) return false
+  }
+  return true
+}
+
 function Dashboard() {
   const [logs, setLogs] = useState<TradeLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [live, setLive] = useState(false)
 
+  const [period, setPeriod] = useState<PeriodFilter>('today')
+  const [sellerQuery, setSellerQuery] = useState('')
+  const [buyerQuery, setBuyerQuery] = useState('')
+  const [itemQuery, setItemQuery] = useState('')
+  const [appliedSeller, setAppliedSeller] = useState('')
+  const [appliedBuyer, setAppliedBuyer] = useState('')
+  const [appliedItem, setAppliedItem] = useState('')
+
   const loadLogs = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const { data, error: queryError } = await supabase
+      let query = supabase
         .from('trade_logs')
         .select('*')
+        .gte('created_at', getPeriodStart(period))
         .order('created_at', { ascending: false })
-        .limit(100)
+        .limit(500)
 
+      const seller = appliedSeller.trim()
+      const buyer = appliedBuyer.trim()
+      const item = appliedItem.trim()
+
+      if (seller) {
+        const sellerCode = Number.parseInt(seller, 10)
+        if (Number.isSafeInteger(sellerCode) && String(sellerCode) === seller) {
+          query = query.eq('seller_code', sellerCode)
+        } else {
+          query = query.ilike('seller_name', `%${seller}%`)
+        }
+      }
+      if (buyer) {
+        const buyerCode = Number.parseInt(buyer, 10)
+        if (Number.isSafeInteger(buyerCode) && String(buyerCode) === buyer) {
+          query = query.eq('buyer_code', buyerCode)
+        } else {
+          query = query.ilike('buyer_name', `%${buyer}%`)
+        }
+      }
+      if (item) {
+        query = query.ilike('item_name', `%${item}%`)
+      }
+
+      const { data, error: queryError } = await query
       if (queryError) throw queryError
       setLogs((data ?? []) as TradeLog[])
     } catch (loadError) {
@@ -32,11 +107,13 @@ function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [period, appliedSeller, appliedBuyer, appliedItem])
 
   useEffect(() => {
     void loadLogs()
+  }, [loadLogs])
 
+  useEffect(() => {
     const channel = supabase
       .channel('trade-logs-live')
       .on(
@@ -44,9 +121,15 @@ function Dashboard() {
         { event: 'INSERT', schema: 'public', table: 'trade_logs' },
         (payload) => {
           const next = payload.new as TradeLog
+          const periodStart = new Date(getPeriodStart(period)).getTime()
+          if (new Date(next.created_at).getTime() < periodStart) return
+          if (!matchesSearch(next, appliedSeller, appliedBuyer, appliedItem)) {
+            return
+          }
+
           setLogs((current) => {
             if (current.some((log) => log.id === next.id)) return current
-            return [next, ...current].slice(0, 100)
+            return [next, ...current].slice(0, 500)
           })
         },
       )
@@ -57,12 +140,29 @@ function Dashboard() {
     return () => {
       void supabase.removeChannel(channel)
     }
-  }, [loadLogs])
+  }, [period, appliedSeller, appliedBuyer, appliedItem])
+
+  function applySearch() {
+    setAppliedSeller(sellerQuery)
+    setAppliedBuyer(buyerQuery)
+    setAppliedItem(itemQuery)
+  }
+
+  function resetSearch() {
+    setSellerQuery('')
+    setBuyerQuery('')
+    setItemQuery('')
+    setAppliedSeller('')
+    setAppliedBuyer('')
+    setAppliedItem('')
+  }
 
   const totalAmount = logs.reduce(
     (sum, log) => sum + BigInt(log.total_price || 0),
     0n,
   )
+  const periodLabel =
+    PERIOD_OPTIONS.find((option) => option.value === period)?.label ?? '당일'
 
   return (
     <section className="space-y-6">
@@ -73,7 +173,7 @@ function Dashboard() {
           </p>
           <h2 className="mt-1 text-2xl font-bold text-zinc-50">실시간 거래 로그</h2>
           <p className="mt-1 text-sm text-zinc-400">
-            최신 거래부터 최대 100건까지 표시합니다.
+            {periodLabel} 기준 로그를 조회합니다.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -98,11 +198,84 @@ function Dashboard() {
         </div>
       </div>
 
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="mr-2 text-sm text-zinc-400">기간</p>
+          {PERIOD_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => setPeriod(option.value)}
+              className={`rounded-xl px-3.5 py-2 text-sm font-medium transition ${
+                period === option.value
+                  ? 'bg-emerald-500 text-zinc-950'
+                  : 'border border-zinc-700 bg-zinc-950 text-zinc-300 hover:border-zinc-500'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <label className="block text-sm text-zinc-300">
+            판매자 검색
+            <input
+              value={sellerQuery}
+              onChange={(event) => setSellerQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') applySearch()
+              }}
+              placeholder="이름 또는 고유번호"
+              className="mt-2 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-zinc-100 outline-none focus:border-emerald-500"
+            />
+          </label>
+          <label className="block text-sm text-zinc-300">
+            구매자 검색
+            <input
+              value={buyerQuery}
+              onChange={(event) => setBuyerQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') applySearch()
+              }}
+              placeholder="이름 또는 고유번호"
+              className="mt-2 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-zinc-100 outline-none focus:border-emerald-500"
+            />
+          </label>
+          <label className="block text-sm text-zinc-300">
+            아이템 검색
+            <input
+              value={itemQuery}
+              onChange={(event) => setItemQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') applySearch()
+              }}
+              placeholder="아이템명"
+              className="mt-2 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-zinc-100 outline-none focus:border-emerald-500"
+            />
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={applySearch}
+            className="rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-zinc-950 hover:bg-emerald-400"
+          >
+            검색
+          </button>
+          <button
+            type="button"
+            onClick={resetSearch}
+            className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-300 hover:border-zinc-500"
+          >
+            초기화
+          </button>
+        </div>
+      </div>
+
       <div className="grid gap-4 sm:grid-cols-3">
         <article className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-5">
-          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-400">
-            <Activity className="h-5 w-5" />
-          </div>
           <p className="text-sm text-zinc-400">표시 중인 로그</p>
           <p className="mt-1 text-2xl font-bold text-zinc-50">{logs.length}</p>
         </article>
@@ -132,7 +305,7 @@ function Dashboard() {
         )}
         {!loading && !error && logs.length === 0 && (
           <div className="px-6 py-16 text-center text-zinc-400">
-            아직 거래 로그가 없습니다.
+            조건에 맞는 거래 로그가 없습니다.
           </div>
         )}
         {!loading && !error && logs.length > 0 && (
