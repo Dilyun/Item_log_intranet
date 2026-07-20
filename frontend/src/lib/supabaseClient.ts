@@ -15,6 +15,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
+    flowType: 'pkce',
   },
 })
 
@@ -67,12 +68,13 @@ export function formatDateTime(value: string) {
 
 export function getDiscordIdFromAuthUser(user: User) {
   const identity = user.identities?.find((item) => item.provider === 'discord')
-  const fromIdentity = identity?.id
+  const meta = user.user_metadata ?? {}
   const fromMeta =
-    (user.user_metadata?.provider_id as string | undefined) ||
-    (user.user_metadata?.sub as string | undefined)
+    (typeof meta.provider_id === 'string' && meta.provider_id) ||
+    (typeof meta.sub === 'string' && meta.sub) ||
+    null
 
-  return fromIdentity || fromMeta || null
+  return identity?.id || fromMeta || null
 }
 
 export async function resolveAppUserFromAuth(
@@ -92,7 +94,7 @@ export async function resolveAppUserFromAuth(
   if (error) throw error
   if (!data) {
     throw new Error(
-      '등록되지 않은 Discord 계정입니다. 관리자에게 유저 등록을 요청해 주세요.',
+      `등록되지 않은 Discord 계정입니다. (ID: ${discordId}) 관리자에게 등록을 요청해 주세요.`,
     )
   }
   if (Number(data.role) === 0) {
@@ -108,11 +110,13 @@ export async function resolveAppUserFromAuth(
 }
 
 export async function signInWithDiscord() {
+  const redirectTo = window.location.origin
   const { error } = await supabase.auth.signInWithOAuth({
     provider: 'discord',
     options: {
-      redirectTo: window.location.origin,
+      redirectTo,
       scopes: 'identify',
+      skipBrowserRedirect: false,
     },
   })
   if (error) throw error
@@ -121,4 +125,23 @@ export async function signInWithDiscord() {
 export async function signOut() {
   const { error } = await supabase.auth.signOut()
   if (error) throw error
+}
+
+/** OAuth 콜백 URL의 ?code= 를 세션으로 교환한다. */
+export async function consumeOAuthCallback() {
+  const url = new URL(window.location.href)
+  const code = url.searchParams.get('code')
+  const authError = url.searchParams.get('error_description')
+
+  if (authError) {
+    throw new Error(authError)
+  }
+
+  if (code) {
+    const { error } = await supabase.auth.exchangeCodeForSession(code)
+    url.searchParams.delete('code')
+    url.searchParams.delete('state')
+    window.history.replaceState({}, '', url.pathname + url.search + url.hash)
+    if (error) throw error
+  }
 }

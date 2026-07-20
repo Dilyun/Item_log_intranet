@@ -12,6 +12,7 @@ import Settings from './components/Settings'
 import UserManagement from './components/UserManagement'
 import {
   getErrorMessage,
+  consumeOAuthCallback,
   resolveAppUserFromAuth,
   signOut,
   supabase,
@@ -38,19 +39,25 @@ function App() {
   useEffect(() => {
     let active = true
 
-    async function syncFromSession() {
+    async function bootstrap() {
       setBooting(true)
-      setAuthError('')
       try {
+        await consumeOAuthCallback()
+
         const { data, error } = await supabase.auth.getSession()
         if (error) throw error
+        if (!active) return
+
         if (!data.session) {
-          if (active) setUser(null)
+          setUser(null)
           return
         }
 
         const appUser = await resolveAppUserFromAuth(data.session.user)
-        if (active) setUser(appUser)
+        if (active) {
+          setUser(appUser)
+          setAuthError('')
+        }
       } catch (error) {
         await supabase.auth.signOut()
         if (active) {
@@ -62,27 +69,30 @@ function App() {
       }
     }
 
-    void syncFromSession()
+    void bootstrap()
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'INITIAL_SESSION') return
+
       void (async () => {
         if (!session) {
-          setUser(null)
-          setBooting(false)
+          if (active) setUser(null)
           return
         }
         try {
           const appUser = await resolveAppUserFromAuth(session.user)
-          setUser(appUser)
-          setAuthError('')
+          if (active) {
+            setUser(appUser)
+            setAuthError('')
+          }
         } catch (error) {
           await supabase.auth.signOut()
-          setUser(null)
-          setAuthError(getErrorMessage(error))
-        } finally {
-          setBooting(false)
+          if (active) {
+            setUser(null)
+            setAuthError(getErrorMessage(error))
+          }
         }
       })()
     })
