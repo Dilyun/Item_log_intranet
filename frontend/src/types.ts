@@ -31,3 +31,4 @@ export type FactionSettings = {
 }
 
 export type AppTab = 'dashboard' | 'users' | 'settings'
+
