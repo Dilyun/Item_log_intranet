@@ -15,13 +15,19 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
-    flowType: 'pkce',
+    // Vite SPA는 PKCE code_verifier가 리다이렉트 중 유실되는 경우가 있어
+    // 브라우저 전용 implicit 플로우가 더 안정적이다.
+    flowType: 'implicit',
   },
 })
 
 export function getErrorMessage(error: unknown) {
   if (error && typeof error === 'object' && 'message' in error) {
-    return String((error as { message: string }).message)
+    const message = String((error as { message: string }).message)
+    if (message.toLowerCase().includes('pkce code verifier')) {
+      return '로그인 세션이 끊겼습니다. 같은 브라우저에서 Discord 로그인을 다시 시도해 주세요.'
+    }
+    return message
   }
   return '알 수 없는 오류가 발생했습니다.'
 }
@@ -110,13 +116,11 @@ export async function resolveAppUserFromAuth(
 }
 
 export async function signInWithDiscord() {
-  const redirectTo = window.location.origin
   const { error } = await supabase.auth.signInWithOAuth({
     provider: 'discord',
     options: {
-      redirectTo,
+      redirectTo: window.location.origin,
       scopes: 'identify',
-      skipBrowserRedirect: false,
     },
   })
   if (error) throw error
@@ -127,21 +131,24 @@ export async function signOut() {
   if (error) throw error
 }
 
-/** OAuth 콜백 URL의 ?code= 를 세션으로 교환한다. */
-export async function consumeOAuthCallback() {
+/** OAuth 콜백 쿼리/해시를 정리한다. */
+export function cleanOAuthUrl() {
   const url = new URL(window.location.href)
-  const code = url.searchParams.get('code')
-  const authError = url.searchParams.get('error_description')
+  let changed = false
 
-  if (authError) {
-    throw new Error(authError)
+  for (const key of ['code', 'state', 'error', 'error_description']) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key)
+      changed = true
+    }
   }
 
-  if (code) {
-    const { error } = await supabase.auth.exchangeCodeForSession(code)
-    url.searchParams.delete('code')
-    url.searchParams.delete('state')
-    window.history.replaceState({}, '', url.pathname + url.search + url.hash)
-    if (error) throw error
+  if (url.hash.includes('access_token') || url.hash.includes('error')) {
+    url.hash = ''
+    changed = true
+  }
+
+  if (changed) {
+    window.history.replaceState({}, '', url.pathname + url.search)
   }
 }

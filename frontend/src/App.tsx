@@ -11,8 +11,8 @@ import Login from './components/Login'
 import Settings from './components/Settings'
 import UserManagement from './components/UserManagement'
 import {
+  cleanOAuthUrl,
   getErrorMessage,
-  consumeOAuthCallback,
   resolveAppUserFromAuth,
   signOut,
   supabase,
@@ -42,11 +42,12 @@ function App() {
     async function bootstrap() {
       setBooting(true)
       try {
-        await consumeOAuthCallback()
-
+        // implicit 플로우: URL 해시의 토큰을 detectSessionInUrl이 처리한 뒤 세션을 읽는다.
         const { data, error } = await supabase.auth.getSession()
         if (error) throw error
         if (!active) return
+
+        cleanOAuthUrl()
 
         if (!data.session) {
           setUser(null)
@@ -59,6 +60,7 @@ function App() {
           setAuthError('')
         }
       } catch (error) {
+        cleanOAuthUrl()
         await supabase.auth.signOut()
         if (active) {
           setUser(null)
@@ -86,6 +88,7 @@ function App() {
           if (active) {
             setUser(appUser)
             setAuthError('')
+            cleanOAuthUrl()
           }
         } catch (error) {
           await supabase.auth.signOut()
