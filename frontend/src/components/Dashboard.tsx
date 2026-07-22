@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Radio, RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Download, Radio, RefreshCw } from 'lucide-react'
 import {
   formatDateTime,
   formatNumber,
@@ -10,12 +10,28 @@ import {
 import type { TradeLog } from '../types'
 
 type PeriodFilter = 'today' | 'week' | 'month'
+type RankTab = 'seller' | 'buyer' | 'item'
 
 const PERIOD_OPTIONS: { value: PeriodFilter; label: string }[] = [
-  { value: 'today', label: '당일' },
+  { value: 'today', label: '오늘' },
   { value: 'week', label: '일주일' },
   { value: 'month', label: '한달' },
 ]
+
+const RANK_TABS: { value: RankTab; label: string }[] = [
+  { value: 'seller', label: '판매자' },
+  { value: 'buyer', label: '구매자' },
+  { value: 'item', label: '아이템' },
+]
+
+type RankRow = {
+  key: string
+  label: string
+  subLabel?: string
+  count: number
+  quantity: bigint
+  amount: bigint
+}
 
 function startOfLocalDay(date = new Date()) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate())
@@ -50,6 +66,95 @@ function matchesSearch(log: TradeLog, seller: string, buyer: string, item: strin
   return true
 }
 
+function buildRankings(logs: TradeLog[], tab: RankTab): RankRow[] {
+  const map = new Map<string, RankRow>()
+
+  for (const log of logs) {
+    let key = ''
+    let label = ''
+    let subLabel: string | undefined
+
+    if (tab === 'seller') {
+      key = `seller:${log.seller_code}`
+      label = log.seller_name
+      subLabel = `#${log.seller_code}`
+    } else if (tab === 'buyer') {
+      key = `buyer:${log.buyer_code}`
+      label = log.buyer_name
+      subLabel = `#${log.buyer_code}`
+    } else {
+      key = `item:${log.item_name}`
+      label = log.item_name
+    }
+
+    const current = map.get(key) ?? {
+      key,
+      label,
+      subLabel,
+      count: 0,
+      quantity: 0n,
+      amount: 0n,
+    }
+    current.count += 1
+    current.quantity += BigInt(log.quantity || 0)
+    current.amount += BigInt(log.total_price || 0)
+    map.set(key, current)
+  }
+
+  return [...map.values()].sort((a, b) => {
+    if (a.amount === b.amount) return b.count - a.count
+    return a.amount > b.amount ? -1 : 1
+  })
+}
+
+function escapeCsvCell(value: string | number) {
+  const text = String(value)
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replaceAll('"', '""')}"`
+  }
+  return text
+}
+
+function downloadTradeLogsCsv(logs: TradeLog[], periodLabel: string) {
+  const header = [
+    'id',
+    'seller_code',
+    'seller_name',
+    'buyer_code',
+    'buyer_name',
+    'item_name',
+    'quantity',
+    'total_price',
+    'created_at',
+  ]
+
+  const rows = logs.map((log) =>
+    [
+      log.id,
+      log.seller_code,
+      log.seller_name,
+      log.buyer_code,
+      log.buyer_name,
+      log.item_name,
+      log.quantity,
+      String(log.total_price),
+      log.created_at,
+    ]
+      .map(escapeCsvCell)
+      .join(','),
+  )
+
+  const csv = `\uFEFF${[header.join(','), ...rows].join('\n')}`
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const stamp = new Date().toISOString().slice(0, 19).replaceAll(':', '-')
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `trade-logs-${periodLabel}-${stamp}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 function Dashboard() {
   const [logs, setLogs] = useState<TradeLog[]>([])
   const [loading, setLoading] = useState(true)
@@ -57,6 +162,7 @@ function Dashboard() {
   const [live, setLive] = useState(false)
 
   const [period, setPeriod] = useState<PeriodFilter>('today')
+  const [rankTab, setRankTab] = useState<RankTab>('seller')
   const [sellerQuery, setSellerQuery] = useState('')
   const [buyerQuery, setBuyerQuery] = useState('')
   const [itemQuery, setItemQuery] = useState('')
@@ -162,7 +268,9 @@ function Dashboard() {
     0n,
   )
   const periodLabel =
-    PERIOD_OPTIONS.find((option) => option.value === period)?.label ?? '당일'
+    PERIOD_OPTIONS.find((option) => option.value === period)?.label ?? '오늘'
+  const rankings = useMemo(() => buildRankings(logs, rankTab), [logs, rankTab])
+  const topRankings = rankings.slice(0, 10)
 
   return (
     <section className="space-y-6">
@@ -176,7 +284,7 @@ function Dashboard() {
             {periodLabel} 기준 로그를 조회합니다.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span
             className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ${
               live
@@ -187,6 +295,15 @@ function Dashboard() {
             <Radio className="h-3.5 w-3.5" />
             {live ? 'Realtime 연결됨' : '연결 대기'}
           </span>
+          <button
+            type="button"
+            onClick={() => downloadTradeLogsCsv(logs, periodLabel)}
+            disabled={logs.length === 0}
+            className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download className="h-4 w-4" />
+            CSV 내보내기
+          </button>
           <button
             type="button"
             onClick={() => void loadLogs()}
@@ -294,6 +411,86 @@ function Dashboard() {
             {formatWon(totalAmount.toString())}
           </p>
         </article>
+      </div>
+
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-5">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-zinc-50">기간별 합계 / 순위</h3>
+            <p className="mt-1 text-sm text-zinc-500">
+              현재 조회된 {periodLabel} 로그 기준으로 금액순 Top 10을 표시합니다.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {RANK_TABS.map((tab) => (
+              <button
+                key={tab.value}
+                type="button"
+                onClick={() => setRankTab(tab.value)}
+                className={`rounded-xl px-3.5 py-2 text-sm font-medium transition ${
+                  rankTab === tab.value
+                    ? 'bg-sky-500 text-zinc-950'
+                    : 'border border-zinc-700 bg-zinc-950 text-zinc-300 hover:border-zinc-500'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="mt-6 py-10 text-center text-sm text-zinc-500">
+            불러오는 중...
+          </div>
+        ) : topRankings.length === 0 ? (
+          <div className="mt-6 py-10 text-center text-sm text-zinc-500">
+            순위 데이터가 없습니다.
+          </div>
+        ) : (
+          <div className="mt-4 overflow-x-auto rounded-xl border border-zinc-800">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-zinc-950/80 text-xs uppercase tracking-wide text-zinc-500">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">순위</th>
+                  <th className="px-4 py-3 font-semibold">
+                    {RANK_TABS.find((tab) => tab.value === rankTab)?.label}
+                  </th>
+                  <th className="px-4 py-3 font-semibold">거래 건수</th>
+                  <th className="px-4 py-3 font-semibold">총 수량</th>
+                  <th className="px-4 py-3 font-semibold">총 금액</th>
+                </tr>
+              </thead>
+              <tbody>
+                {topRankings.map((row, index) => (
+                  <tr
+                    key={row.key}
+                    className="border-t border-zinc-800/80 text-zinc-200"
+                  >
+                    <td className="px-4 py-3 tabular-nums text-zinc-400">
+                      {index + 1}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-zinc-50">{row.label}</div>
+                      {row.subLabel ? (
+                        <div className="text-xs text-zinc-500">{row.subLabel}</div>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-3 tabular-nums">
+                      {formatNumber(row.count)}건
+                    </td>
+                    <td className="px-4 py-3 tabular-nums">
+                      {formatNumber(row.quantity)}EA
+                    </td>
+                    <td className="px-4 py-3 tabular-nums text-emerald-300">
+                      {formatWon(row.amount)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/80">
