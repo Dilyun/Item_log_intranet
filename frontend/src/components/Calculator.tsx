@@ -26,8 +26,7 @@ function Calculator() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const [selectedItem, setSelectedItem] = useState('')
-  const [itemQty, setItemQty] = useState('1')
+  const [quantities, setQuantities] = useState<Record<string, string>>({})
   const [blackQty, setBlackQty] = useState('1')
 
   const [sellerCode, setSellerCode] = useState('')
@@ -58,9 +57,7 @@ function Calculator() {
         const nextItems = (itemsResult.data ?? []) as Item[]
         setItems(nextItems)
         setPublicRate(Number(factionResult.data?.public_account_rate ?? 50))
-
-        const firstNormal = nextItems.find((item) => item.item_name !== BLACK_MONEY_NAME)
-        if (firstNormal) setSelectedItem(firstNormal.item_name)
+        setQuantities({})
       } catch (loadError) {
         setError(getErrorMessage(loadError))
       } finally {
@@ -82,17 +79,49 @@ function Calculator() {
     [items],
   )
 
-  const selected = normalItems.find((item) => item.item_name === selectedItem)
-  const qty = BigInt(itemQty || '0')
-  const unitPrice = BigInt(selected?.price_per_unit || 0)
-  const itemTotal = unitPrice * qty
+  const lineItems = useMemo(() => {
+    return normalItems.map((item) => {
+      const qtyText = quantities[item.item_name] ?? ''
+      const qty = BigInt(qtyText || '0')
+      const unitPrice = BigInt(item.price_per_unit || 0)
+      const lineTotal = unitPrice * qty
+      return {
+        item,
+        qtyText,
+        qty,
+        unitPrice,
+        lineTotal,
+      }
+    })
+  }, [normalItems, quantities])
+
+  const itemTotal = useMemo(
+    () => lineItems.reduce((sum, line) => sum + line.lineTotal, 0n),
+    [lineItems],
+  )
   const itemPublic = (itemTotal * BigInt(publicRate)) / 100n
+  const filledCount = lineItems.filter((line) => line.qty > 0n).length
 
   const blackCount = BigInt(blackQty || '0')
   const blackTotal = BLACK_MONEY_UNIT * blackCount
   const blackPublic = (blackTotal * BLACK_PUBLIC_RATE) / 100n
   const blackExchanger = (blackTotal * BLACK_EXCHANGER_RATE) / 100n
   const blackRequester = (blackTotal * BLACK_REQUESTER_RATE) / 100n
+
+  function setItemQuantity(itemName: string, value: string) {
+    const next = value.replace(/[^\d]/g, '')
+    setQuantities((current) => {
+      if (!next) {
+        const { [itemName]: _, ...rest } = current
+        return rest
+      }
+      return { ...current, [itemName]: next }
+    })
+  }
+
+  function resetQuantities() {
+    setQuantities({})
+  }
 
   async function lookupNameByCode(
     code: string,
@@ -187,55 +216,86 @@ function Calculator() {
         </p>
         <h2 className="mt-1 text-2xl font-bold text-zinc-50">정산 계산기</h2>
         <p className="mt-1 text-sm text-zinc-400">
-          일반 물품과 검은 돈 환전 금액을 빠르게 계산합니다.
+          아이템별 구매량을 입력하면 합산 금액과 공동 계좌 입금액을 계산합니다.
         </p>
       </div>
 
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-6">
-        <div className="mb-5 flex items-center gap-2 text-zinc-50">
-          <Package className="h-5 w-5 text-sky-300" />
-          <h3 className="text-lg font-semibold">일반 물품 계산</h3>
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-zinc-50">
+            <Package className="h-5 w-5 text-sky-300" />
+            <h3 className="text-lg font-semibold">일반 물품 계산</h3>
+          </div>
+          <button
+            type="button"
+            onClick={resetQuantities}
+            className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-2 text-sm text-zinc-300 hover:border-zinc-500"
+          >
+            입력 초기화
+          </button>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="block text-sm text-zinc-300">
-            아이템
-            <select
-              value={selectedItem}
-              onChange={(event) => setSelectedItem(event.target.value)}
-              className="mt-2 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-zinc-100 outline-none focus:border-emerald-500"
-            >
-              {normalItems.map((item) => (
-                <option key={item.item_name} value={item.item_name}>
-                  {item.item_name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="block text-sm text-zinc-300">
-            수량
-            <input
-              value={itemQty}
-              onChange={(event) =>
-                setItemQty(event.target.value.replace(/[^\d]/g, ''))
-              }
-              className="mt-2 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2.5 text-zinc-100 outline-none focus:border-emerald-500"
-              inputMode="numeric"
-            />
-          </label>
-        </div>
+        {normalItems.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-zinc-700 px-4 py-10 text-center text-sm text-zinc-500">
+            등록된 일반 물품이 없습니다. 설정에서 아이템을 추가해 주세요.
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-zinc-800">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-zinc-950/80 text-zinc-400">
+                <tr>
+                  <th className="px-4 py-3 font-medium">아이템</th>
+                  <th className="px-4 py-3 font-medium">단가</th>
+                  <th className="px-4 py-3 font-medium">구매량</th>
+                  <th className="px-4 py-3 font-medium text-right">소계</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lineItems.map(({ item, qtyText, unitPrice, lineTotal }) => (
+                  <tr
+                    key={item.item_name}
+                    className="border-t border-zinc-800/80"
+                  >
+                    <td className="px-4 py-3 font-medium text-zinc-100">
+                      {item.item_name}
+                    </td>
+                    <td className="px-4 py-3 text-zinc-300">
+                      {formatWon(unitPrice)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <input
+                        value={qtyText}
+                        onChange={(event) =>
+                          setItemQuantity(item.item_name, event.target.value)
+                        }
+                        placeholder="0"
+                        inputMode="numeric"
+                        className="w-28 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-emerald-500"
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-right font-medium text-zinc-100">
+                      {formatWon(lineTotal)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         <div className="mt-5 grid gap-3 sm:grid-cols-3">
-          <ResultCard label="개당 단가" value={formatWon(unitPrice)} />
-          <ResultCard label="총 금액" value={formatWon(itemTotal)} highlight />
+          <ResultCard
+            label="입력한 아이템"
+            value={`${formatNumber(filledCount)}종`}
+          />
+          <ResultCard label="합산 총액" value={formatWon(itemTotal)} highlight />
           <ResultCard
             label={`공동 계좌 입금액 (${publicRate}%)`}
             value={formatWon(itemPublic)}
           />
         </div>
         <p className="mt-3 text-xs text-zinc-500">
-          공동 계좌 = 단가 × 수량 × 공계 비율({publicRate}%)
+          공동 계좌 = 합산 총액 × 공계 비율({publicRate}%)
         </p>
       </div>
 
