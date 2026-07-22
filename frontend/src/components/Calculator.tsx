@@ -21,6 +21,7 @@ const BLACK_PUBLIC_RATE = 10n
 const BLACK_EXCHANGER_RATE = 10n
 const BLACK_REQUESTER_RATE = 80n
 const FAVORITES_STORAGE_KEY = 'calculator-favorite-items'
+const QTY_PRESETS = [5, 10, 100] as const
 
 const apiUrl = (
   import.meta.env.VITE_API_URL || 'http://localhost:3000'
@@ -165,6 +166,13 @@ function Calculator() {
         return rest
       }
       return { ...current, [itemName]: next }
+    })
+  }
+
+  function addItemQuantity(itemName: string, amount: number) {
+    setQuantities((current) => {
+      const prev = BigInt(current[itemName] || '0')
+      return { ...current, [itemName]: String(prev + BigInt(amount)) }
     })
   }
 
@@ -441,13 +449,13 @@ function Calculator() {
             </label>
 
             <div className="overflow-x-auto rounded-xl border border-zinc-800">
-              <table className="w-full min-w-[40rem] table-fixed text-left text-sm">
+              <table className="w-full min-w-[48rem] table-fixed text-left text-sm">
                 <colgroup>
-                  <col className="w-[8%]" />
-                  <col className="w-[30%]" />
-                  <col className="w-[20%]" />
+                  <col className="w-[6%]" />
+                  <col className="w-[24%]" />
                   <col className="w-[16%]" />
-                  <col className="w-[26%]" />
+                  <col className="w-[32%]" />
+                  <col className="w-[22%]" />
                 </colgroup>
                 <thead className="bg-zinc-950/80 text-zinc-400">
                   <tr>
@@ -505,18 +513,34 @@ function Calculator() {
                             {formatWon(unitPrice)}
                           </td>
                           <td className="px-4 py-3">
-                            <input
-                              value={qtyText}
-                              onChange={(event) =>
-                                setItemQuantity(
-                                  item.item_name,
-                                  event.target.value,
-                                )
-                              }
-                              placeholder="0"
-                              inputMode="numeric"
-                              className="w-full max-w-[7rem] rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 tabular-nums text-zinc-100 outline-none focus:border-emerald-500"
-                            />
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                value={qtyText}
+                                onChange={(event) =>
+                                  setItemQuantity(
+                                    item.item_name,
+                                    event.target.value,
+                                  )
+                                }
+                                placeholder="0"
+                                inputMode="numeric"
+                                className="w-20 shrink-0 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 tabular-nums text-zinc-100 outline-none focus:border-emerald-500"
+                              />
+                              <div className="flex flex-wrap gap-1">
+                                {QTY_PRESETS.map((amount) => (
+                                  <button
+                                    key={amount}
+                                    type="button"
+                                    onClick={() =>
+                                      addItemQuantity(item.item_name, amount)
+                                    }
+                                    className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs font-medium text-zinc-300 hover:border-emerald-500 hover:text-emerald-300"
+                                  >
+                                    +{amount}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
                           </td>
                           <td className="px-4 py-3 text-right font-medium tabular-nums text-zinc-100">
                             <span className="inline-block w-full truncate">
